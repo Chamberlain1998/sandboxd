@@ -15,7 +15,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -104,89 +103,6 @@ func TestGenerateOciPreservesEntrypoint(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spec.Process.Args, command) {
 		t.Fatalf("args = %v, want %v", spec.Process.Args, command)
-	}
-}
-
-func TestGenerateOciRuntimeMountsOverrideNormalizedBaseDestinations(t *testing.T) {
-	tests := []struct {
-		name          string
-		runtimeTarget string
-	}{
-		{
-			name:          "exact destination",
-			runtimeTarget: "/etc/resolv.conf",
-		},
-		{
-			name:          "equivalent cleaned destination",
-			runtimeTarget: "/etc/./resolv.conf",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			baseMounts := []Mount{
-				{Destination: "/proc", Type: "proc", Source: "proc"},
-				{Destination: "/dev", Type: "tmpfs", Source: "tmpfs"},
-				{
-					Destination: "/etc/hosts",
-					Type:        "bind",
-					Source:      "/etc/hosts",
-					Options:     []string{"bind", "ro"},
-				},
-				{
-					Destination: "/etc/resolv.conf",
-					Type:        "bind",
-					Source:      "/etc/resolv_akernel.conf",
-					Options:     []string{"bind", "ro"},
-				},
-			}
-			baseSpec := defaultSandboxSpec()
-			baseSpec.Mounts = baseMounts
-			baseSpecJSON, err := json.Marshal(baseSpec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			baseSpecFile := filepath.Join(t.TempDir(), "base-spec.json")
-			if err := os.WriteFile(baseSpecFile, baseSpecJSON, 0644); err != nil {
-				t.Fatal(err)
-			}
-
-			loader, err := NewBundleLoader(baseSpecFile, t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			runtimeMountOptions := []string{"bind", "ro", "nosuid"}
-			_, spec, err := loader.GenerateOci(OciLoadOptions{
-				SandboxID:  "sandbox-managed-resolver",
-				CgroupPath: "/sandbox/managed-resolver",
-				Config: StartConfig{
-					Rootfs:    t.TempDir(),
-					Resources: &runtime.LinuxSandboxResources{},
-					Mounts: []*runtime.Mount{
-						nil,
-						{
-							Target:  tt.runtimeTarget,
-							Type:    "bind",
-							Source:  &runtime.Mount_HostPath{HostPath: "/sandbox-files/resolv.conf"},
-							Options: runtimeMountOptions,
-						},
-					},
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			want := append([]Mount(nil), baseMounts[:3]...)
-			want = append(want, Mount{
-				Destination: tt.runtimeTarget,
-				Type:        "bind",
-				Source:      "/sandbox-files/resolv.conf",
-				Options:     runtimeMountOptions,
-			})
-			if !reflect.DeepEqual(spec.Mounts, want) {
-				t.Fatalf("mounts = %#v, want %#v", spec.Mounts, want)
-			}
-		})
 	}
 }
 

@@ -127,29 +127,7 @@ func (r *BundleLoader) GenerateOci(options OciLoadOptions) (string, *Spec, error
 		ociSpec.Process.Env = combineEnvs(ociSpec.Process.Env, options.Config.Envs)
 	}
 
-	if len(options.Config.Mounts) > 0 {
-		overridden := make(map[string]struct{}, len(options.Config.Mounts))
-		for _, mnt := range options.Config.Mounts {
-			if mnt == nil || mnt.GetTarget() == "" {
-				continue
-			}
-			overridden[filepath.Clean(mnt.GetTarget())] = struct{}{}
-		}
-
-		baseMounts := make([]Mount, 0, len(ociSpec.Mounts))
-		for _, mnt := range ociSpec.Mounts {
-			if _, ok := overridden[filepath.Clean(mnt.Destination)]; ok {
-				continue
-			}
-			baseMounts = append(baseMounts, mnt)
-		}
-		ociSpec.Mounts = baseMounts
-	}
-
 	for _, mnt := range options.Config.Mounts {
-		if mnt == nil {
-			continue
-		}
 		ociSpec.Mounts = append(ociSpec.Mounts, Mount{
 			Destination: mnt.GetTarget(),
 			Type:        mnt.GetType(),
