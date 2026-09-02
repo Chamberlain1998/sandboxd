@@ -17,6 +17,7 @@ package runsc
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,5 +273,48 @@ func TestCheckpointCancellationTerminatesCommand(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("checkpoint cancellation took %s", elapsed)
+	}
+}
+
+func TestOpenRestoreFilesIncludesPageSidecarsInRPCOrder(t *testing.T) {
+	checkpointDir := t.TempDir()
+	for name, content := range map[string]string{
+		"checkpoint.img": "state",
+		"pages_meta.img": "metadata",
+		"pages.img":      "pages",
+	} {
+		if err := os.WriteFile(filepath.Join(checkpointDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, havePagesFile, err := openRestoreFiles(filepath.Join(checkpointDir, "checkpoint.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, file := range files {
+			file.Close()
+		}
+	}()
+	if !havePagesFile {
+		t.Fatal("openRestoreFiles() did not report page sidecars")
+	}
+	if len(files) != 3 {
+		t.Fatalf("openRestoreFiles() returned %d files, want 3", len(files))
+	}
+	wantNames := []string{"checkpoint.img", "pages_meta.img", "pages.img"}
+	wantContents := []string{"state", "metadata", "pages"}
+	for index, file := range files {
+		if got := filepath.Base(file.Name()); got != wantNames[index] {
+			t.Fatalf("file[%d] name = %q, want %q", index, got, wantNames[index])
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(data); got != wantContents[index] {
+			t.Fatalf("file[%d] contents = %q, want %q", index, got, wantContents[index])
+		}
 	}
 }

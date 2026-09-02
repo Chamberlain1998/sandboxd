@@ -302,7 +302,7 @@ func (o *restoreOpts) setFilePayload(files []*os.File) {
 }
 
 // Restore connects a runsc sandbox previously created with Create, installs
-// its target networking, and restores the single compressed checkpoint file.
+// its target networking, and restores the checkpoint files produced by runsc.
 // The Restore RPC has no fixed timeout because loading a large image may take
 // arbitrarily long; it remains cancellable through ctx.
 func (c *Client) Restore(ctx context.Context, args StartArgs, imagePath string) error {
@@ -339,13 +339,20 @@ func (c *Client) Restore(ctx context.Context, args StartArgs, imagePath string) 
 	if err := callContextWithTimeout(ctx, conn, contMgrSetNetworkArgs, networkArgs, nil, 30*time.Second); err != nil {
 		return fmt.Errorf("set network arguments for %s: %w", args.ID, err)
 	}
-	image, err := os.Open(imagePath)
+	checkpointFiles, havePagesFile, err := openRestoreFiles(imagePath)
 	if err != nil {
-		return fmt.Errorf("open checkpoint image for %s: %w", args.ID, err)
+		return fmt.Errorf("open checkpoint files for %s: %w", args.ID, err)
 	}
-	defer image.Close()
+	defer func() {
+		for _, file := range checkpointFiles {
+			file.Close()
+		}
+	}()
 
-	opts := &restoreOpts{payload: filePayload{Files: []*os.File{image}}}
+	opts := &restoreOpts{
+		payload:       filePayload{Files: checkpointFiles},
+		HavePagesFile: havePagesFile,
+	}
 	device, err := c.openPlatformDevice()
 	if err != nil {
 		return fmt.Errorf("open platform device for %s: %w", args.ID, err)
@@ -362,6 +369,47 @@ func (c *Client) Restore(ctx context.Context, args StartArgs, imagePath string) 
 		return fmt.Errorf("mark runsc state running for %s: %w", args.ID, err)
 	}
 	return nil
+}
+
+func openRestoreFiles(imagePath string) (files []*os.File, havePagesFile bool, retErr error) {
+	stateFile, err := os.Open(imagePath)
+	if err != nil {
+		return nil, false, err
+	}
+	files = append(files, stateFile)
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		for _, file := range files {
+			file.Close()
+		}
+	}()
+
+	checkpointDir := filepath.Dir(imagePath)
+	pagesMetadataPath := filepath.Join(checkpointDir, "pages_meta.img")
+	pagesMetadata, err := os.Open(pagesMetadataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		pagesPath := filepath.Join(checkpointDir, "pages.img")
+		if _, pagesErr := os.Stat(pagesPath); pagesErr == nil {
+			return files, false, fmt.Errorf("checkpoint pages file exists without metadata file %q", pagesMetadataPath)
+		} else if !errors.Is(pagesErr, os.ErrNotExist) {
+			return files, false, fmt.Errorf("inspect checkpoint pages file %q: %w", pagesPath, pagesErr)
+		}
+		return files, false, nil
+	}
+	if err != nil {
+		return files, false, fmt.Errorf("open checkpoint pages metadata file %q: %w", pagesMetadataPath, err)
+	}
+	files = append(files, pagesMetadata)
+
+	pagesPath := filepath.Join(checkpointDir, "pages.img")
+	pages, err := os.Open(pagesPath)
+	if err != nil {
+		return files, false, fmt.Errorf("open checkpoint pages file %q: %w", pagesPath, err)
+	}
+	files = append(files, pages)
+	return files, true, nil
 }
 
 func (c *Client) openPlatformDevice() (*os.File, error) {
